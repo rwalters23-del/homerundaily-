@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeRunDaily Alerts</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.6; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    h1 { text-align: center; margin-bottom: 8px; font-size: 1.8rem; }
+    .subtitle { text-align: center; color: #7d8590; margin-bottom: 24px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .card h2 { font-size: 1rem; color: #7d8590; margin-bottom: 12px; }
+    input, button { font-size: 16px; padding: 12px; border-radius: 6px; border: 1px solid #30363d; }
+    input { background: #0d1117; color: #e6edf3; width: 100%; }
+    input:focus { outline: none; border-color: #58a6ff; }
+    button { background: #238636; color: #fff; border: none; cursor: pointer; font-weight: 600; width: 100%; }
+    button:hover { background: #2ea043; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #21262d; }
+    button.secondary:hover { background: #30363d; }
+    button.danger { background: #da3633; }
+    .email-form { display: flex; gap: 8px; }
+    .email-form input { flex: 1; }
+    .email-form button { width: auto; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tabs button { flex: 1; background: #21262d; }
+    .tabs button.active { background: #58a6ff; }
+    .search-result { background: #21262d; padding: 12px; border-radius: 6px; margin-top: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .search-result:hover { background: #30363d; }
+    .sub-list { list-style: none; }
+    .sub-list li { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #21262d; border-radius: 6px; margin-bottom: 8px; }
+    .sub-list .remove { background: transparent; color: #f85149; width: auto; padding: 4px 8px; font-size: 14px; }
+    .status { text-align: center; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+    .status.success { background: #238636; }
+    .status.error { background: #da3633; }
+    .status.hidden { display: none; }
+    .empty { text-align: center; color: #7d8590; padding: 24px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🏏 HomeRunDaily</h1>
+    <p class="subtitle">Real-time MLB Home Run alerts</p>
+    <div id="status" class="status hidden"></div>
+    <div id="login-section" class="card">
+      <h2>Get Started</h2>
+      <div class="email-form">
+        <input type="email" id="email" placeholder="Enter your email">
+        <button onclick="register()">Subscribe</button>
+      </div>
+    </div>
+    <div id="dashboard" class="hidden">
+      <div class="card">
+        <h2>Your Alerts</h2>
+        <div class="tabs">
+          <button id="tab-teams" class="active" onclick="switchTab('teams')">Teams</button>
+          <button id="tab-players" class="secondary" onclick="switchTab('players')">Players</button>
+        </div>
+        <div id="teams-tab">
+          <div class="email-form">
+            <input type="text" id="team-search" placeholder="Search teams..." oninput="searchTeams(this.value)">
+          </div>
+          <div id="team-results"></div>
+        </div>
+        <div id="players-tab" class="hidden">
+          <div class="email-form">
+            <input type="text" id="player-search" placeholder="Search players..." oninput="searchPlayers(this.value)">
+          </div>
+          <div id="player-results"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Active Subscriptions</h2>
+        <ul id="subscriptions-list" class="sub-list"></ul>
+        <div id="no-subs" class="empty">No subscriptions yet</div>
+      </div>
+      <div class="card">
+        <h2>Notifications</h2>
+        <button onclick="testNotification()" class="secondary">Send Test Alert</button>
+        <p style="margin-top: 12px; font-size: 14px; color: #7d8590;">Make sure to allow notifications when prompted.</p>
+      </div>
+    </div>
+  </div>
+  <script>
+    let userId = localStorage.getItem('homerundaily_userId');
+    let vapidPublicKey = '';
+    async function init() {
+      if (userId) { showDashboard(); loadSubscriptions(); }
+      const res = await fetch('/api/vapid-key');
+      const data = await res.json();
+      vapidPublicKey = data.publicKey;
+    }
+    function showStatus(msg, type) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'status ' + type;
+    }
+    async function register() {
+      const email = document.getElementById('email').value.trim();
+      if (!email) return showStatus('Please enter an email', 'error');
+      const res = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+      const data = await res.json();
+      userId = data.userId;
+      localStorage.setItem('homerundaily_userId', userId);
+      await subscribePush();
+      showDashboard();
+      loadSubscriptions();
+    }
+    async function subscribePush() {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        showStatus('Push notifications not supported', 'error');
+        return;
+      }
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { showStatus('Notifications blocked. Enable in browser settings.', 'error'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapidPublicKey) });
+      await fetch('/api/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId, subscription: sub }) });
+    }
+    function showDashboard() {
+      document.getElementById('login-section').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+    }
+    function switchTab(tab) {
+      document.getElementById('tab-teams').className = tab === 'teams' ? 'active' : 'secondary';
+      document.getElementById('tab-players').className = tab === 'players' ? 'active' : 'secondary';
+      document.getElementById('teams-tab').classList.toggle('hidden', tab !== 'teams');
+      document.getElementById('players-tab').classList.toggle('hidden', tab !== 'players');
+    }
+    let teamSearchTimeout, playerSearchTimeout;
+    async function searchTeams(q) {
+      clearTimeout(teamSearchTimeout);
+      if (q.length < 2) { document.getElementById('team-results').innerHTML = ''; return; }
+      teamSearchTimeout = setTimeout(async () => {
+        const res = await fetch('/api/teams');
+        const teams = await res.json();
+        const filtered = teams.filter(t => t.name.toLowerCase().includes(q.toLowerCase())).slice(0, 5);
+        document.getElementById('team-results').innerHTML = filtered.map(t => '<div class="search-result" onclick="addSubscription(\'team\', \'' + t.id + '\', \'' + t.name + '\')"><span>' + t.name + '</span><span style="color:#7d8590">' + t.abbrev + '</span></div>').join('');
+      }, 300);
+    }
+    async function searchPlayers(q) {
+      clearTimeout(playerSearchTimeout);
+      if (q.length < 2) { document.getElementById('player-results').innerHTML = ''; return; }
+      playerSearchTimeout = setTimeout(async () => {
+        const res = await fetch('/api/players?q=' + encodeURIComponent(q));
+        const players = await res.json();
+        document.getElementById('player-results').innerHTML = players.map(p => '<div class="search-result" onclick="addSubscription(\'player\', \'' + p.id + '\', \'' + p.name + '\')"><span>' + p.name + '</span><span style="color:#7d8590">' + (p.team || '') + '</span></div>').join('');
+      }, 300);
+    }
+    async function addSubscription(type, entityId, entityName) {
+      await fetch('/api/subscriptions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId, type, entityId, entityName }) });
+      document.getElementById('team-search').value = '';
+      document.getElementById('player-search').value = '';
+      document.getElementById('team-results').innerHTML = '';
+      document.getElementById('player-results').innerHTML = '';
+      loadSubscriptions();
+    }
+    async function loadSubscriptions() {
+      const res = await fetch('/api/subscriptions/' + userId);
+      const subs = await res.json();
+      const list = document.getElementById('subscriptions-list');
+      const empty = document.getElementById('no-subs');
+      if (subs.length === 0) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+      empty.classList.add('hidden');
+      list.innerHTML = subs.map(s => '<li><span>' + s.entity_name + '</span><button class="remove" onclick="removeSubscription(\'' + s.type + '\', \'' + s.entity_id + '\')">Remove</button></li>').join('');
+    }
+    async function removeSubscription(type, entityId) {
+      await fetch('/api/subscriptions/' + userId + '/' + type + '/' + entityId, { method: 'DELETE' });
+      loadSubscriptions();
+    }
+    async function testNotification() {
+      const res = await fetch('/api/test-notify/' + userId, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) showStatus('Test alert sent! (' + data.sent + ' devices)', 'success');
+      else showStatus(data.error || 'Failed to send', 'error');
+    }
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    }
+    init();
+  </script>
+</body>
+</html>
